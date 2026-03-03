@@ -16,6 +16,9 @@ build/
 # データ・キャッシュ（必要に応じて調整）
 data/*.csv
 data/*.db
+data/users.json
+data/races/*.json
+data/bloodline/*.json
 *.log
 .cache/
 
