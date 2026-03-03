@@ -1,0 +1,25 @@
+# ステータスが「完了」のタスクに対応する GitHub Issue を自動でクローズする。
+# docs/TASK_STATUS.json を更新して push すると、このワークフローが走り該当 Issue をクローズする。
+name: Sync task status to GitHub Issues
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'docs/TASK_STATUS.json'
+      - 'scripts/update_github_issues_progress.py'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync completed tasks to Issues
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/update_github_issues_progress.py --comment

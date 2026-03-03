@@ -1,0 +1,1 @@
+# predic_keiba - データモデル
