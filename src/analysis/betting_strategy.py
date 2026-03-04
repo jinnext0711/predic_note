@@ -83,6 +83,10 @@ class RaceBettingStrategy:
     strategy_summary: str = ""        # 戦略サマリー (日本語)
     # 期待値ギャップ
     ev_gap_analysis: str = ""         # 期待値ギャップ分析テキスト
+    # 自信度・トリガミチェック
+    confidence: str = ""              # レースの自信度 (A/B/C/D)
+    trigami_check_passed: bool = True  # トリガミ防止チェック結果
+    trigami_notes: str = ""           # トリガミ調整メモ
 
     def to_dict(self) -> dict:
         return {
@@ -94,6 +98,9 @@ class RaceBettingStrategy:
             "total_investment": self.total_investment,
             "strategy_summary": self.strategy_summary,
             "ev_gap_analysis": self.ev_gap_analysis,
+            "confidence": self.confidence,
+            "trigami_check_passed": self.trigami_check_passed,
+            "trigami_notes": self.trigami_notes,
         }
 
     @classmethod
@@ -111,6 +118,9 @@ class RaceBettingStrategy:
             total_investment=int(d.get("total_investment", 0)),
             strategy_summary=d.get("strategy_summary", ""),
             ev_gap_analysis=d.get("ev_gap_analysis", ""),
+            confidence=d.get("confidence", ""),
+            trigami_check_passed=d.get("trigami_check_passed", True),
+            trigami_notes=d.get("trigami_notes", ""),
         )
 
 
@@ -162,6 +172,34 @@ class BettingStrategyEngine:
         self.default_budget = default_budget
 
     # ===================================================================
+    # 自信度に応じた予算
+    # ===================================================================
+
+    def _get_budget_for_confidence(self, confidence: str) -> int:
+        """
+        自信度に応じた予算を返す。
+
+        自信度と予算の対応:
+            A（自信あり）: 10,000円
+            B（やや自信）: 7,000円
+            C（五分五分）: 4,000円
+            D（難解）    : 1,000円
+
+        Args:
+            confidence: 自信度 ("A"/"B"/"C"/"D")
+
+        Returns:
+            予算（円）
+        """
+        budget_map = {
+            "A": 10000,
+            "B": 7000,
+            "C": 4000,
+            "D": 1000,
+        }
+        return budget_map.get(confidence, self.default_budget)
+
+    # ===================================================================
     # メインメソッド
     # ===================================================================
 
@@ -170,6 +208,7 @@ class BettingStrategyEngine:
         analysis: dict,
         odds: OddsData,
         budget: int = None,
+        confidence: str = "",
     ) -> RaceBettingStrategy:
         """
         馬券戦略を決定するメインメソッド。
@@ -182,12 +221,19 @@ class BettingStrategyEngine:
                           各馬: horse_number, horse_name, total_index, mark (◎○▲△ or "")
                         - race_summary: dict (任意)
             odds: 全券種のオッズデータ
-            budget: 予算（円）。None の場合 default_budget を使用
+            budget: 予算（円）。None の場合 default_budget を使用。
+                    confidence が指定されている場合、自信度に応じた予算を優先。
+            confidence: 自信度 ("A"/"B"/"C"/"D")。
+                        指定された場合、対応する予算を自動設定する。
 
         Returns:
             RaceBettingStrategy
         """
-        budget = budget or self.default_budget
+        # 自信度が指定されている場合、自信度に応じた予算を使用
+        if confidence and budget is None:
+            budget = self._get_budget_for_confidence(confidence)
+        else:
+            budget = budget or self.default_budget
         race_id = analysis.get("race_id", odds.race_id or "")
         race_name = analysis.get("race_name", "")
 
@@ -266,6 +312,15 @@ class BettingStrategyEngine:
         )
 
         # ----------------------------------------------------------------
+        # 6.5 トリガミ防止チェック
+        # ----------------------------------------------------------------
+        aggressive_bets, conservative_bets, trigami_passed, trigami_notes = (
+            self._validate_no_trigami(
+                aggressive_bets, conservative_bets, budget
+            )
+        )
+
+        # ----------------------------------------------------------------
         # 7. 最推奨券種を決定
         # ----------------------------------------------------------------
         best_bet_type = self._determine_best_bet_type(
@@ -299,6 +354,9 @@ class BettingStrategyEngine:
             total_investment=total_investment,
             strategy_summary=strategy_summary,
             ev_gap_analysis=ev_gap_analysis,
+            confidence=confidence,
+            trigami_check_passed=trigami_passed,
+            trigami_notes=trigami_notes,
         )
 
     # ===================================================================
@@ -782,10 +840,10 @@ class BettingStrategyEngine:
         """
         予算を攻めと堅実に配分する。
 
-        配分ルール:
-        - 堅いレース → 攻め60%, 堅実40%
-        - 混戦      → 攻め40%, 堅実60%
-        - 波乱      → 攻め50%, 堅実50%
+        配分ルール（守り重視 / 攻め30〜50%, 守り50〜70%）:
+        - 堅いレース → 攻め50%, 堅実50%
+        - 混戦      → 攻め35%, 堅実65%
+        - 波乱      → 攻め40%, 堅実60%
 
         ガミ防止: 堅実ベットの期待リターン >= 投資額を目指す。
 
@@ -798,13 +856,13 @@ class BettingStrategyEngine:
         Returns:
             (割り当て後の攻め, 割り当て後の堅実)
         """
-        # 攻め/堅実の予算比率
+        # 攻め/堅実の予算比率（守り重視に変更）
         if race_type == "堅い":
-            agg_ratio = 0.60
-        elif race_type == "混戦":
-            agg_ratio = 0.40
-        else:  # 波乱
             agg_ratio = 0.50
+        elif race_type == "混戦":
+            agg_ratio = 0.35
+        else:  # 波乱
+            agg_ratio = 0.40
 
         agg_budget = int(budget * agg_ratio)
         con_budget = budget - agg_budget
@@ -896,6 +954,108 @@ class BettingStrategyEngine:
                 return []
 
         return self._allocate_to_bets(selected_bets, budget)
+
+    # ===================================================================
+    # トリガミ防止チェック
+    # ===================================================================
+
+    def _validate_no_trigami(
+        self,
+        aggressive: List[BetRecommendation],
+        conservative: List[BetRecommendation],
+        total_budget: int,
+    ) -> Tuple[List[BetRecommendation], List[BetRecommendation], bool, str]:
+        """
+        トリガミ防止チェック。守りの馬券だけで総投資額を回収できるか検証する。
+
+        チェック内容:
+        - 守りの最低期待リターン >= 総投資額
+        - 複勝の払戻し > 全馬券の投資額
+        - ワイドは最低オッズでもプラスになる金額設定
+        - 三連複ボックスは点数×100円 < 想定最低払戻し
+
+        トリガミリスクがある場合、攻めベットを削減して守りに回す。
+
+        Args:
+            aggressive: 攻めベットリスト
+            conservative: 守りベットリスト
+            total_budget: 総予算
+
+        Returns:
+            (adjusted_aggressive, adjusted_conservative, passed, notes)
+        """
+        notes_parts: List[str] = []
+        passed = True
+
+        total_investment = sum(b.amount for b in aggressive) + sum(
+            b.amount for b in conservative
+        )
+
+        if total_investment == 0:
+            return aggressive, conservative, True, ""
+
+        # チェック1: 守りの最低期待リターン >= 総投資額
+        # 守りの馬券それぞれの「最低想定払戻し」を計算
+        min_conservative_return = 0
+        for bet in conservative:
+            # ワイドの場合は最低オッズを使用
+            if bet.bet_type == "ワイド":
+                # bet.odds は平均オッズ。最低は約70%と仮定
+                min_return = bet.amount * bet.odds * 0.7
+            elif bet.bet_type == "複勝":
+                # 複勝の最低は約80%
+                min_return = bet.amount * bet.odds * 0.8
+            else:
+                min_return = bet.amount * bet.odds * 0.85
+            min_conservative_return += min_return
+
+        if min_conservative_return < total_investment and conservative:
+            passed = False
+            notes_parts.append(
+                f"守りの最低想定払戻し({int(min_conservative_return):,}円) < "
+                f"総投資額({total_investment:,}円)"
+            )
+
+            # 調整: 攻めを減らして守りに回す
+            while aggressive and min_conservative_return < total_investment:
+                # EVが最低の攻めベットを削除
+                removed = aggressive.pop()
+                freed = removed.amount
+
+                # 守りの最高EVベットに上乗せ
+                if conservative:
+                    conservative[0] = BetRecommendation(
+                        bet_type=conservative[0].bet_type,
+                        selection=conservative[0].selection,
+                        odds=conservative[0].odds,
+                        expected_value=conservative[0].expected_value,
+                        confidence=conservative[0].confidence,
+                        amount=conservative[0].amount + freed,
+                        reasoning=conservative[0].reasoning,
+                    )
+
+                # 再計算
+                total_investment = sum(b.amount for b in aggressive) + sum(
+                    b.amount for b in conservative
+                )
+                min_conservative_return = 0
+                for bet in conservative:
+                    if bet.bet_type == "ワイド":
+                        min_return = bet.amount * bet.odds * 0.7
+                    elif bet.bet_type == "複勝":
+                        min_return = bet.amount * bet.odds * 0.8
+                    else:
+                        min_return = bet.amount * bet.odds * 0.85
+                    min_conservative_return += min_return
+
+            if min_conservative_return >= total_investment:
+                notes_parts.append(
+                    "攻めベットを削減し、守りベットを増額して調整済み"
+                )
+                passed = True
+
+        notes = " / ".join(notes_parts) if notes_parts else "トリガミチェック: OK"
+        return aggressive, conservative, passed, notes
 
     # ===================================================================
     # レース分類

@@ -65,31 +65,42 @@ class NoteArticleWriter:
         # ヘッダー
         sections.append(self._write_header(race_date, analyses))
 
-        # メインレース(重賞/特別戦)と一般レースを分離
-        main_races: list[tuple[dict, dict]] = []
-        regular_races: list[tuple[dict, dict]] = []
+        # 全レースをTier 1/2/3に分類
+        tier1_races: list[tuple[dict, dict]] = []
+        tier2_races: list[tuple[dict, dict]] = []
+        tier3_races: list[tuple[dict, dict]] = []
 
         for analysis, strategy in zip(analyses, strategies):
-            if self._is_main_race(analysis):
-                main_races.append((analysis, strategy))
+            tier = self._classify_race_tier(analysis)
+            if tier == 1:
+                tier1_races.append((analysis, strategy))
+            elif tier == 2:
+                tier2_races.append((analysis, strategy))
             else:
-                regular_races.append((analysis, strategy))
+                tier3_races.append((analysis, strategy))
 
-        # メインレースを先に詳細分析で出力
-        if main_races:
+        # Tier 1: フル分析（重賞レース）
+        if tier1_races:
             sections.append("---")
-            sections.append("## 本日のメインレース")
+            sections.append("## 重賞レース（フル分析）")
             sections.append("")
-            for analysis, strategy in main_races:
-                sections.append(self._write_race_section(analysis, strategy))
+            for analysis, strategy in tier1_races:
+                sections.append(self._write_tier1_section(analysis, strategy))
 
-        # 一般レース
-        if regular_races:
+        # Tier 2: 詳細分析（注目レース）
+        if tier2_races:
             sections.append("---")
-            sections.append("## その他の注目レース")
+            sections.append("## 注目レース（詳細分析）")
             sections.append("")
-            for analysis, strategy in regular_races:
-                sections.append(self._write_race_section(analysis, strategy))
+            for analysis, strategy in tier2_races:
+                sections.append(self._write_tier2_section(analysis, strategy))
+
+        # Tier 3: 基本分析（通常レース）
+        if tier3_races:
+            sections.append("---")
+            sections.append("## 通常レース")
+            sections.append("")
+            sections.append(self._write_tier3_section_group(tier3_races))
 
         # フッター
         sections.append(self._write_footer(strategies))
@@ -105,19 +116,25 @@ class NoteArticleWriter:
         # 日付をフォーマット (例: "2026年3月1日")
         formatted_date = self._format_date(race_date)
 
-        # メインレース名をリストアップ
-        main_race_names = [
-            a.get("race_name", "")
-            for a in analyses
-            if self._is_main_race(a)
-        ]
+        # Tier別のカウントとメインレース名をリストアップ
+        tier1_names: list[str] = []
+        tier2_count = 0
+        tier3_count = 0
+        for a in analyses:
+            tier = self._classify_race_tier(a)
+            if tier == 1:
+                tier1_names.append(a.get("race_name", ""))
+            elif tier == 2:
+                tier2_count += 1
+            else:
+                tier3_count += 1
 
         lines: list[str] = []
         lines.append(f"# {formatted_date} 競馬予想・全レース分析")
         lines.append("")
 
-        if main_race_names:
-            title_races = "／".join(main_race_names)
+        if tier1_names:
+            title_races = "／".join(tier1_names)
             lines.append(f"**本日の注目: {title_races}**")
             lines.append("")
 
@@ -128,9 +145,15 @@ class NoteArticleWriter:
         )
         lines.append("")
 
-        # サマリーテーブル
-        lines.append(f"> 対象: **{len(analyses)}レース** ｜ "
-                      f"メイン: **{len(main_race_names)}鞍**")
+        # サマリーテーブル（Tier別カウント）
+        summary_parts = [f"対象: **{len(analyses)}レース**"]
+        if tier1_names:
+            summary_parts.append(f"重賞: **{len(tier1_names)}鞍**")
+        if tier2_count:
+            summary_parts.append(f"注目: **{tier2_count}鞍**")
+        if tier3_count:
+            summary_parts.append(f"通常: **{tier3_count}鞍**")
+        lines.append("> " + " ｜ ".join(summary_parts))
         lines.append("")
 
         return "\n".join(lines)
@@ -378,6 +401,165 @@ class NoteArticleWriter:
 
         return "\n".join(lines)
 
+    # ---------------------------------------------------------------
+    # Tier別セクション生成
+    # ---------------------------------------------------------------
+
+    def _write_expert_review_section(self, analysis: dict) -> str:
+        """専門家レビューセクション（Tier 1のみ）。"""
+        lines: list[str] = []
+
+        review_notes = analysis.get("review_notes", [])
+        bloodline_key = analysis.get("bloodline_key_factor", "")
+        training_notes = analysis.get("training_notes", "")
+
+        if not any([review_notes, bloodline_key, training_notes]):
+            return ""
+
+        lines.append("#### 専門家レビュー")
+        lines.append("")
+
+        if bloodline_key:
+            lines.append(f"**血統PICK**: {bloodline_key}")
+            lines.append("")
+
+        if training_notes:
+            lines.append(f"**調教CHECK**: {training_notes}")
+            lines.append("")
+
+        if review_notes:
+            lines.append("**レビュー補正ログ**")
+            lines.append("")
+            for note in review_notes:
+                lines.append(f"- {note}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _write_tier1_section(self, analysis: dict, strategy: dict) -> str:
+        """Tier 1レース（重賞）のフル分析セクションを生成する。
+
+        6軸評価 + 4専門家レビュー + 全馬評価表 + 期待値ギャップ分析
+        """
+        lines: list[str] = []
+
+        # セクション1: 対象レース
+        race_name = analysis.get("race_name", "不明")
+        venue = analysis.get("venue", "")
+        surface = analysis.get("surface", "")
+        distance = analysis.get("distance", "")
+        grade = analysis.get("grade", "")
+        num_horses = analysis.get("num_horses", "")
+
+        lines.append(f"### {race_name}")
+        lines.append("")
+        condition_parts = [
+            p for p in [venue, surface, f"{distance}m" if distance else "",
+                        grade, f"{num_horses}頭" if num_horses else ""]
+            if p
+        ]
+        if condition_parts:
+            lines.append(f"**{' / '.join(condition_parts)}**")
+            lines.append("")
+
+        # セクション2: コース傾向
+        lines.append(self._write_course_analysis(analysis))
+
+        # セクション3: レース診断
+        lines.append(self._write_race_diagnosis(analysis))
+
+        # セクション4: 専門家レビュー（Tier 1のみ）
+        expert_section = self._write_expert_review_section(analysis)
+        if expert_section:
+            lines.append(expert_section)
+
+        # セクション5: 全馬評価テーブル
+        lines.append(self._write_horse_evaluation_table(analysis))
+
+        # セクション6: 最終結論
+        lines.append(self._write_final_conclusion(analysis))
+
+        # セクション7: 買い目
+        lines.append(self._write_betting_recommendations(strategy))
+
+        lines.append("")
+        return "\n".join(lines)
+
+    def _write_tier2_section(self, analysis: dict, strategy: dict) -> str:
+        """Tier 2レース（注目レース）の詳細分析セクションを生成する。
+
+        6軸評価 + 全馬評価表 + 推奨買い目（専門家レビューなし）
+        """
+        # Tier 2は既存の_write_race_sectionと同等
+        return self._write_race_section(analysis, strategy)
+
+    def _write_tier3_section_group(self, races: list) -> str:
+        """Tier 3レースをコンパクトにまとめて表示する。"""
+        lines: list[str] = []
+        for analysis, strategy in races:
+            race_name = analysis.get("race_name", "不明")
+            venue = analysis.get("venue", "")
+            surface = analysis.get("surface", "")
+            distance = analysis.get("distance", "")
+            confidence = analysis.get("confidence", "")
+            volatility = analysis.get("volatility", "")
+            comment = analysis.get("diagnosis_comment", "")
+
+            lines.append(f"### {race_name}")
+            condition_parts = [
+                p for p in [venue, surface,
+                            f"{distance}m" if distance else ""]
+                if p
+            ]
+            if condition_parts:
+                lines.append(
+                    f"**{' / '.join(condition_parts)}** ｜ "
+                    f"自信度: {confidence} ｜ 波乱度: {volatility}"
+                )
+            lines.append("")
+
+            # 印のみコンパクトに
+            selections = analysis.get("selections", [])
+            if selections:
+                marks = []
+                for sel in selections:
+                    mark = sel.get("mark", "")
+                    number = sel.get("number", "")
+                    name = sel.get("name", "")
+                    if mark:
+                        marks.append(f"{mark}{number}{name}")
+                if marks:
+                    lines.append(f"**印**: {' / '.join(marks)}")
+                    lines.append("")
+
+            # 一言見解
+            if comment:
+                lines.append(f"> {comment}")
+                lines.append("")
+
+            # 買い目（コンパクト）
+            self._write_compact_bets(lines, strategy)
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _write_compact_bets(self, lines: list, strategy: dict) -> None:
+        """コンパクトな買い目表示。"""
+        aggressive = strategy.get("aggressive", [])
+        conservative = strategy.get("conservative", [])
+        all_bets = aggressive + conservative
+        if all_bets:
+            bet_strs = []
+            for bet in all_bets[:4]:  # 最大4件表示
+                bet_type = bet.get("type", "")
+                detail = bet.get("detail", "")
+                amount = bet.get("amount", "")
+                bet_strs.append(f"{bet_type}: {detail}({amount}円)")
+            lines.append("**買い目**: " + " ｜ ".join(bet_strs))
+        total = strategy.get("total_investment", "")
+        if total:
+            lines.append(f"投資額: {total}円")
+
     def _write_footer(self, strategies: List[dict]) -> str:
         """記事フッター(全体サマリー)を生成する。"""
         lines: list[str] = []
@@ -436,6 +618,52 @@ class NoteArticleWriter:
         # レース名やグレードにメインレースのキーワードが含まれるかチェック
         combined = f"{race_name}{grade}"
         return any(kw in combined for kw in self._MAIN_RACE_KEYWORDS)
+
+    def _is_graded_race(self, analysis: dict) -> bool:
+        """重賞レース（G1〜G3、リステッド）かどうか。"""
+        grade = analysis.get("grade", "")
+        race_name = analysis.get("race_name", "")
+        combined = f"{race_name}{grade}"
+        graded_keywords = (
+            "G1", "G2", "G3", "GI", "GII", "GIII",
+            "重賞", "リステッド", "Listed",
+        )
+        return any(kw in combined for kw in graded_keywords)
+
+    def _classify_race_tier(self, analysis: dict) -> int:
+        """レースをTier 1/2/3に分類する。"""
+        # Tier 1: 重賞
+        if self._is_graded_race(analysis):
+            return 1
+
+        # Tier 2 条件チェック
+        # 特別戦（ステークス等）
+        race_name = analysis.get("race_name", "")
+        if any(kw in race_name for kw in ("ステークス", "特別", "賞")):
+            return 2
+
+        # 波乱度が高い
+        volatility = analysis.get("volatility", "")
+        if volatility in ("波乱含み", "大波乱"):
+            return 2
+
+        # 自信度A
+        confidence = analysis.get("confidence", "")
+        if confidence == "A":
+            return 2
+
+        # 期待値ギャップ大 or 特注馬あり
+        value_horses = analysis.get("value_horses", [])
+        value_gaps = analysis.get("value_gaps", [])
+        if value_horses or value_gaps:
+            return 2
+
+        # 勝負レース
+        if analysis.get("is_best_bet_race", False):
+            return 2
+
+        # その他: Tier 3
+        return 3
 
     @staticmethod
     def _format_date(date_str: str) -> str:

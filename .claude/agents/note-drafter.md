@@ -3,6 +3,11 @@
 ## 役割
 ブラウザ自動操作で note.com に記事を下書き保存する。公開は行わない。
 
+## 予想方針
+`docs/PREDICTION_POLICY.md` に準拠。
+- ハッシュタグ: #競馬予想 #AI予想 #馬券 #中央競馬 #PredIndex
+- 記事の構成は `article-writer` が作成した記事ファイルに従う
+
 ## 前提条件
 - ユーザーが Chrome ブラウザで note.com に**事前ログイン済み**であること
 - Claude in Chrome 拡張機能が有効であること

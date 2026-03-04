@@ -224,6 +224,8 @@ class RaceAnalysis:
     # 期待値ギャップ
     value_horses: List[dict] = field(default_factory=list)    # 期待値の高い馬
     danger_popular: List[dict] = field(default_factory=list)  # 危険な人気馬
+    # レースTier（PREDICTION_POLICY準拠: 1=重賞フル分析, 2=注目レース詳細, 3=通常基本分析）
+    race_tier: int = 3
 
     def to_dict(self) -> dict:
         return {
@@ -248,6 +250,7 @@ class RaceAnalysis:
             "keshi": [e.to_dict() for e in self.keshi],
             "value_horses": self.value_horses,
             "danger_popular": self.danger_popular,
+            "race_tier": self.race_tier,
         }
 
     @classmethod
@@ -274,6 +277,7 @@ class RaceAnalysis:
             keshi=[HorseEvaluation.from_dict(e) for e in d.get("keshi", [])],
             value_horses=d.get("value_horses", []),
             danger_popular=d.get("danger_popular", []),
+            race_tier=int(d.get("race_tier", 3)),
         )
 
 
@@ -405,6 +409,11 @@ class RaceAnalyzer:
         renka = [e for e in evaluations if e.mark == "△"]
         keshi = [e for e in evaluations if e.mark == "×"]
 
+        # --- レースTier分類（PREDICTION_POLICY準拠） ---
+        race_tier = self._classify_race_tier(
+            race_data, volatility, confidence, value_horses
+        )
+
         return RaceAnalysis(
             race_id=race_data.race_id,
             race_name=race_data.race_name,
@@ -427,6 +436,7 @@ class RaceAnalyzer:
             keshi=keshi,
             value_horses=value_horses,
             danger_popular=danger_popular,
+            race_tier=race_tier,
         )
 
     # =======================================================================
@@ -1186,6 +1196,58 @@ class RaceAnalyzer:
                 })
 
         return value_horses, danger_popular
+
+    # =======================================================================
+    # レースTier分類（PREDICTION_POLICY準拠）
+    # =======================================================================
+
+    _GRADED_KEYWORDS = ("G1", "G2", "G3", "GI", "GII", "GIII", "重賞", "リステッド", "Listed")
+    _NOTABLE_KEYWORDS = ("ステークス", "特別", "賞")
+
+    def _classify_race_tier(
+        self,
+        race_data: UpcomingRaceWithEntries,
+        volatility: str,
+        confidence: str,
+        value_horses: List[dict],
+    ) -> int:
+        """
+        レースをTierに分類する（PREDICTION_POLICY.md 準拠）。
+
+        Tier 1: 重賞レース（G1〜G3、リステッド） → フル分析
+        Tier 2: 注目レース（妙味のある平場） → 詳細分析
+        Tier 3: 通常レース → 基本分析
+
+        Returns:
+            1, 2, or 3
+        """
+        race_name = race_data.race_name or ""
+        race_class = race_data.race_class or ""
+        combined = f"{race_name}{race_class}"
+
+        # --- Tier 1: 重賞 ---
+        if any(kw in combined for kw in self._GRADED_KEYWORDS):
+            return 1
+
+        # --- Tier 2 判定（いずれかに該当すれば昇格） ---
+        # 条件1: 特別戦（○○ステークス等の名前付きレース）
+        if any(kw in race_name for kw in self._NOTABLE_KEYWORDS):
+            return 2
+
+        # 条件2: 波乱度が「波乱含み」以上
+        if volatility in ("波乱含み", "大波乱"):
+            return 2
+
+        # 条件3: 自信度A（データ的に読みやすく的中を取りに行ける）
+        if confidence == "A":
+            return 2
+
+        # 条件4: 期待値ギャップが大きい（実力と人気の乖離が顕著な馬がいる）
+        if value_horses:
+            return 2
+
+        # --- Tier 3: 通常レース ---
+        return 3
 
     # =======================================================================
     # ヘルパーメソッド

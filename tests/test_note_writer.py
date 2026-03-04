@@ -319,19 +319,19 @@ class TestMainRaceDetection:
         assert not writer._is_main_race({"race_name": "3歳未勝利", "grade": ""})
 
     def test_main_races_appear_first(self, writer):
-        """メインレースがその他レースより先に出力されること。"""
+        """重賞レース（Tier 1）が注目レース（Tier 2）より先に出力されること。"""
         analyses = [
             _make_analysis(race_name="3歳未勝利", is_main=False, grade=""),
             _make_analysis(race_name="テストG1", is_main=True, grade="G1"),
         ]
         strategies = [_make_strategy(), _make_strategy()]
         article = writer.compose_article("2025-01-01", analyses, strategies)
-        # メインレースセクションが先に出現すること
-        main_pos = article.find("本日のメインレース")
-        other_pos = article.find("その他の注目レース")
-        assert main_pos != -1, "メインレースセクションが見つからない"
-        assert other_pos != -1, "その他レースセクションが見つからない"
-        assert main_pos < other_pos
+        # 重賞レースセクション（Tier 1）が注目レースセクション（Tier 2）より先に出現すること
+        tier1_pos = article.find("重賞レース（フル分析）")
+        tier2_pos = article.find("注目レース（詳細分析）")
+        assert tier1_pos != -1, "重賞レースセクションが見つからない"
+        assert tier2_pos != -1, "注目レースセクションが見つからない"
+        assert tier1_pos < tier2_pos
 
 
 # ===========================================================================
