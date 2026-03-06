@@ -13,9 +13,14 @@
 - **波乱度判定**: 「堅い」「上位拮抗」「波乱含み」「大波乱」
 - **3段階Tier**: Tier 1=フル分析、Tier 2=詳細分析、Tier 3=基本分析（`race_tier` フィールドで自動分類）
 
+## 前提条件チェック
+0. 分析開始前に `entry_status` を確認する
+   - `unconfirmed` / `not_available` のレースは分析を拒否し、理由をチームリーダーに報告
+   - `partial` のレースは警告をコメントに含めた上で分析を実施（race_analyzer.py 内蔵）
+
 ## 指示
 1. `data/upcoming/{race_id}/shutuba.json` からレースデータを読み込む
-2. `RaceAnalyzer.analyze_race()` で各レースを分析
+2. `RaceAnalyzer.analyze_race()` で各レースを分析（entry_status ガード内蔵）
 3. 6軸で各馬を評価し総合指数を算出:
    - **能力** (0.30): 過去成績・タイム・着差
    - **調子** (0.15): 上り3F推移、間隔、前走内容
@@ -36,8 +41,13 @@
 - `src/data/shutuba_schema.py` - データスキーマ
 - `src/data/upcoming_storage.py` - データ読み書き
 
+## 進捗トラッキング（GitHub Issue）
+7. 分析完了後、`issue_manager.update_race_status()` でステータスを `analyzed` に更新
+8. 分析エラー時は `error` ステータスで更新
+
 ## 制約
 - 分析は客観的データに基づくこと
 - 主観的な「感覚」だけの予想は避ける
 - データ不足の馬は評価を下げすぎず、根拠を「データ不足」と明記する
 - 各馬の強み・弱みの根拠を必ず記録する
+- `entry_status` が `unconfirmed` / `not_available` のレースは分析しない

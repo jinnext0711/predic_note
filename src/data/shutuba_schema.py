@@ -336,6 +336,8 @@ class UpcomingRaceWithEntries:
     trainer_stats: Dict[str, TrainerStats] = field(default_factory=dict)
     # trainer_id -> TrainerStats
     odds: Optional[OddsData] = None
+    entry_status: str = ""  # "confirmed" / "partial" / "unconfirmed" / "not_available"
+    entry_validation_issues: List[dict] = field(default_factory=list)  # 検証問題リスト
 
     def to_dict(self) -> dict:
         return {
@@ -353,6 +355,8 @@ class UpcomingRaceWithEntries:
             "jockey_stats": {k: v.to_dict() for k, v in self.jockey_stats.items()},
             "trainer_stats": {k: v.to_dict() for k, v in self.trainer_stats.items()},
             "odds": self.odds.to_dict() if self.odds else None,
+            "entry_status": self.entry_status,
+            "entry_validation_issues": self.entry_validation_issues,
         }
 
     @classmethod
@@ -372,4 +376,6 @@ class UpcomingRaceWithEntries:
             jockey_stats={k: JockeyStats.from_dict(v) for k, v in d.get("jockey_stats", {}).items()},
             trainer_stats={k: TrainerStats.from_dict(v) for k, v in d.get("trainer_stats", {}).items()},
             odds=OddsData.from_dict(d["odds"]) if d.get("odds") else None,
+            entry_status=d.get("entry_status", ""),
+            entry_validation_issues=d.get("entry_validation_issues", []),
         )

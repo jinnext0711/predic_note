@@ -7,8 +7,11 @@
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+import logging
 import re
 import statistics
+
+logger = logging.getLogger(__name__)
 
 from data.shutuba_schema import (
     HorseHistory,
@@ -311,6 +314,24 @@ class RaceAnalyzer:
         3. ペース予想・波乱度判定
         4. 印付け・期待値ギャップ検出
         """
+        # 出馬表未確定チェック
+        if race_data.entry_status in ("unconfirmed", "not_available"):
+            logger.warning(
+                "出馬表未確定のため分析をスキップ: %s (%s)",
+                race_data.race_id,
+                race_data.entry_status,
+            )
+            analysis = self._empty_analysis(race_data)
+            analysis.comment = "出馬表が未確定のため分析を行えませんでした。"
+            return analysis
+
+        # 一部未確定の場合は警告を付与して分析を実施
+        if race_data.entry_status == "partial":
+            logger.warning(
+                "出馬表一部未確定。警告付きで分析を実施: %s",
+                race_data.race_id,
+            )
+
         entries = race_data.entries
         if not entries:
             # 出走馬が0頭の場合は空の分析結果を返す

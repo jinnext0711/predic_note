@@ -23,6 +23,7 @@ from typing import Dict, List, Optional, Tuple
 import requests
 
 from .shutuba_parser import (
+    parse_kaisai_date_list,
     parse_race_calendar_page,
     parse_shutuba_page,
     parse_horse_history_page,
@@ -101,21 +102,24 @@ class ShutubaFetcher:
             time.sleep(self._interval - elapsed)
         self._last_request_time = time.time()
 
-    def _get(self, url: str) -> Optional[str]:
+    def _get(self, url: str, encoding: str = "euc-jp") -> Optional[str]:
         """
         GETリクエストを実行し、HTMLテキストを返す。
 
         最大 MAX_RETRIES 回リトライする（指数バックオフ）。
+
+        Parameters
+        ----------
+        encoding : str
+            レスポンスのデコードに使うエンコーディング。
+            メインページは "euc-jp"、AJAX サブページは "utf-8"。
         """
         for attempt in range(1, MAX_RETRIES + 1):
             self._wait()
             try:
                 resp = self._session.get(url, timeout=30)
                 resp.raise_for_status()
-                # netkeibaはEUC-JPの場合がある
-                if resp.encoding and resp.encoding.lower() in ("iso-8859-1", "latin-1"):
-                    resp.encoding = "euc-jp"
-                return resp.text
+                return resp.content.decode(encoding, errors="replace")
             except requests.RequestException as e:
                 logger.warning(
                     "リクエスト失敗 (試行 %d/%d): %s - %s",
@@ -136,9 +140,38 @@ class ShutubaFetcher:
     # 個別データ取得メソッド
     # ------------------------------------------------------------------
 
-    def fetch_race_calendar(self, target_date: date) -> List[str]:
+    def fetch_kaisai_dates(self, target_date: date) -> List[date]:
         """
-        指定日の開催日程からレースID一覧を取得する。
+        指定日付の近辺の開催日リストを取得する。
+
+        Parameters
+        ----------
+        target_date : date
+            基準日付
+
+        Returns
+        -------
+        List[date]
+            開催日のリスト
+        """
+        date_str = target_date.strftime("%Y%m%d")
+        url = (
+            f"{RACE_BASE_URL}/top/race_list_get_date_list.html"
+            f"?kaisai_date={date_str}&encoding=UTF-8"
+        )
+        logger.info("開催日リストを取得: %s", url)
+
+        # サブページはUTF-8
+        html = self._get(url, encoding="utf-8")
+        if not html:
+            logger.warning("開催日リストの取得に失敗")
+            return []
+
+        return parse_kaisai_date_list(html)
+
+    def fetch_race_calendar(self, target_date: date) -> List[dict]:
+        """
+        指定日の開催日程からレース情報一覧を取得する。
 
         Parameters
         ----------
@@ -147,23 +180,25 @@ class ShutubaFetcher:
 
         Returns
         -------
-        List[str]
-            レースIDのリスト（中央競馬のみ）
+        List[dict]
+            レース情報のリスト。各要素は:
+            race_id, race_number, title, surface_dist
         """
         date_str = target_date.strftime("%Y%m%d")
-        url = f"{RACE_BASE_URL}/top/race_list.html?kaisai_date={date_str}"
+        # サブページはUTF-8
+        url = f"{RACE_BASE_URL}/top/race_list_sub.html?kaisai_date={date_str}"
         logger.info("開催日程を取得: %s (%s)", target_date.isoformat(), url)
 
-        html = self._get(url)
+        html = self._get(url, encoding="utf-8")
         if not html:
             logger.warning("開催日程ページの取得に失敗: %s", target_date.isoformat())
             return []
 
-        race_ids = parse_race_calendar_page(html)
+        races = parse_race_calendar_page(html)
         logger.info(
-            "%s: %d レースを検出", target_date.isoformat(), len(race_ids)
+            "%s: %d レースを検出", target_date.isoformat(), len(races)
         )
-        return race_ids
+        return races
 
     def fetch_shutuba(
         self, race_id: str
@@ -216,8 +251,9 @@ class ShutubaFetcher:
         Optional[HorseHistory]
             馬の戦績サマリー。取得失敗時は None。
         """
-        url = f"{DB_BASE_URL}/horse/{horse_id}/"
-        logger.info("馬の戦績を取得: %s (id=%s)", horse_name, horse_id)
+        # SP版（モバイル版）を使用: デスクトップ版はAJAX化されHTMLに戦績テーブルがなくなった
+        url = f"https://db.sp.netkeiba.com/horse/{horse_id}/"
+        logger.info("馬の戦績を取得(SP版): %s (id=%s)", horse_name, horse_id)
 
         html = self._get(url)
         if not html:
@@ -339,7 +375,7 @@ class ShutubaFetcher:
             logger.warning("単勝オッズページの取得に失敗: race_id=%s", race_id)
             return {}
 
-        odds_dict = parse_win_odds_page(html)
+        odds_dict = parse_win_odds_page(html, race_id)
         logger.info(
             "単勝オッズパース完了: race_id=%s, %d頭分",
             race_id, len(odds_dict),
@@ -440,13 +476,30 @@ class ShutubaFetcher:
             odds=odds_data,
         )
 
+        # 出馬表の確定状態を検証
+        from .entry_validator import validate_entries
+
+        validation = validate_entries(race_data)
+        race_data.entry_status = validation.status.value
+        race_data.entry_validation_issues = [
+            i.to_dict() for i in validation.issues
+        ]
+
+        if not validation.is_analyzable:
+            logger.warning(
+                "出馬表未確定のためスキップ推奨: race_id=%s - %s",
+                race_id,
+                validation.summary,
+            )
+
         logger.info(
-            "=== レース全データ取得完了: %s %s %s%dm %d頭 ===",
+            "=== レース全データ取得完了: %s %s %s%dm %d頭 [%s] ===",
             race_id,
             race_data.venue,
             race_data.surface,
             race_data.distance,
             len(entries),
+            validation.summary,
         )
         return race_data
 
@@ -476,13 +529,15 @@ class ShutubaFetcher:
             target_date.isoformat(),
         )
 
-        # 開催日程からレースID一覧を取得
-        race_ids = self.fetch_race_calendar(target_date)
-        if not race_ids:
+        # 開催日程からレース情報一覧を取得
+        races = self.fetch_race_calendar(target_date)
+        if not races:
             logger.warning(
                 "%s: レースが見つかりませんでした", target_date.isoformat()
             )
             return []
+
+        race_ids = [r["race_id"] for r in races]
 
         # 上限の適用
         if self._max_races is not None and len(race_ids) > self._max_races:
@@ -507,12 +562,28 @@ class ShutubaFetcher:
                     "レースデータ取得失敗（スキップ）: race_id=%s", race_id
                 )
 
+        # 確定状態のサマリーを出力
+        confirmed = [
+            r for r in all_races if r.entry_status == "confirmed"
+        ]
+        partial = [
+            r for r in all_races if r.entry_status == "partial"
+        ]
+        unconfirmed = [
+            r for r in all_races
+            if r.entry_status in ("unconfirmed", "not_available")
+        ]
+
         logger.info(
             "========================================\n"
             "  %s: %d/%d レースの取得完了\n"
+            "  確定状態: 確定=%d, 一部未確定=%d, 未確定=%d\n"
             "========================================",
             target_date.isoformat(),
             len(all_races),
             len(race_ids),
+            len(confirmed),
+            len(partial),
+            len(unconfirmed),
         )
         return all_races
